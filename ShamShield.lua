@@ -90,55 +90,8 @@ local DEPLETED_SOUND = "igQuestFailed" -- played when the shield runs out
 local MAINHAND_SLOT = 16
 local OFFHAND_SLOT  = 17
 
--- 1.12 has no per-sound volume, so alerts play at a fraction of your sound
--- effects volume: the SFX volume is lowered just before the sound starts and
--- put back a moment later (RESTORE_DELAY must outlast the longest alert).
-local ALERT_VOLUME = 0.5
-local RESTORE_DELAY = 2.5
-local savedSFX = nil
-local savedCVar = nil
-local restoreIn = 0
-
--- Clients differ in what the sound effects volume setting is called, and some
--- have none of these. Every CVar call is wrapped in pcall, so a missing CVar
--- just means alerts play at normal volume instead of raising an error.
-local VOLUME_CVARS = { "Sound_SFXVolume", "SoundVolume" }
-
-local function RestoreVolume()
-    if savedSFX and savedCVar then
-        pcall(SetCVar, savedCVar, savedSFX)
-    end
-    savedSFX = nil
-    savedCVar = nil
-end
-
-local volumeFrame = CreateFrame("Frame")
-volumeFrame:RegisterEvent("PLAYER_LOGOUT")
-volumeFrame:SetScript("OnEvent", RestoreVolume)
-volumeFrame:SetScript("OnUpdate", function()
-    if savedSFX then
-        restoreIn = restoreIn - arg1
-        if restoreIn <= 0 then RestoreVolume() end
-    end
-end)
-
 -- Plays an alert: either a PlaySound name ("RaidWarning") or a sound file path.
 local function PlayAlert(sound)
-    if not savedSFX then
-        for i = 1, table.getn(VOLUME_CVARS) do
-            local ok, value = pcall(GetCVar, VOLUME_CVARS[i])
-            local v = ok and tonumber(value)
-            if v then
-                if pcall(SetCVar, VOLUME_CVARS[i], v * ALERT_VOLUME) then
-                    savedSFX = v
-                    savedCVar = VOLUME_CVARS[i]
-                    break
-                end
-            end
-        end
-    end
-    restoreIn = RESTORE_DELAY
-
     if string.find(sound, "\\", 1, true) then
         if PlaySoundFile then
             PlaySoundFile(sound)
