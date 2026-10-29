@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="SHAMSHIELD_CAST" header="SHAMSHIELD">
+		ShamShield_Cast()
+	</Binding>
+</Bindings>

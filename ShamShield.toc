@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: ShamShield
+## Notes: One-button shield picker for Shamans with a flyout of learned shields and a status overlay.
+## Author: You
+## Version: 1.0
+## SavedVariables: ShamShieldDB
+
+ShamShield.lua
