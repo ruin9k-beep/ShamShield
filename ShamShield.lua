@@ -137,8 +137,14 @@ local function GetKindSound(key)
     return "none"
 end
 
--- Plays the sound the player picked for one kind of alert.
-local function PlayKind(key)
+local function KindEnabled(key)
+    return not (ShamShieldDB.soundOff and ShamShieldDB.soundOff[key])
+end
+
+-- Plays the sound the player picked for one kind of alert. A disabled alert
+-- stays silent unless force is set (the Test button and the picker preview).
+local function PlayKind(key, force)
+    if not force and not KindEnabled(key) then return end
     local sound = GetKindSound(key)
     if sound ~= "none" then
         PlayAlert(sound)
@@ -1191,7 +1197,7 @@ end
 -- Events / timers
 ---------------------------------------------------------------------------
 local tick = 0
-local soundElapsed = SOUND_INTERVAL
+local soundElapsed = 0
 local bagDirty = false
 local pulseActive = false
 local pulseSpell = nil
@@ -1240,7 +1246,8 @@ root:SetScript("OnUpdate", function()
         shieldSlot.overlay:SetAlpha(mid + amp * math.sin(pulseTime * 2 * math.pi / PULSE_PERIOD))
     end
 
-    -- Combat alert: plays right away, then every SOUND_INTERVAL seconds.
+    -- Combat alert: first plays SOUND_INTERVAL seconds after the shield goes
+    -- missing (so it does not overlap the "shield used up" sound), then repeats.
     if ShamShieldDB.sound ~= false and UnitAffectingCombat("player")
        and not UnitIsDeadOrGhost("player") and not shieldSlot.state.mounted
        and ShieldMissing() then
@@ -1250,7 +1257,7 @@ root:SetScript("OnUpdate", function()
             PlayKind("alert")
         end
     else
-        soundElapsed = SOUND_INTERVAL
+        soundElapsed = 0
     end
 end)
 
@@ -1460,7 +1467,7 @@ local function CreateConfigFrame()
                     ShamShieldDB.sounds[kind] = this.choice.sound
                     if picker.owner then picker.owner:SetText(this.choice.name) end
                     picker:Hide()
-                    PlayKind(kind)
+                    PlayKind(kind, true)
                 end)
             end
 
@@ -1802,22 +1809,37 @@ local function CreateConfigFrame()
             intro:SetWidth(310)
             intro:SetJustifyH("LEFT")
             intro:SetText("Choose the sound for each warning. Click Test to hear it. "
-                          .. "All warning sounds can be switched off with /ss sound.")
+                          .. "Untick a warning to turn it off. /ss sound switches all of them off.")
             y = y + 44
 
             f.soundButtons = {}
+            f.soundChecks = {}
             for k = 1, table.getn(SOUND_KINDS) do
                 local kind = SOUND_KINDS[k]
 
-                local label = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                label:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 2))
-                label:SetText(kind.label)
+                -- Checkbox: ticked = this warning is on.
+                local cb = CreateFrame("CheckButton", "ShamShieldConfigSoundOn" .. k, page,
+                                       "OptionsCheckButtonTemplate")
+                cb:SetPoint("TOPLEFT", page, "TOPLEFT", 22, -y)
+                getglobal(cb:GetName() .. "Text"):SetText(kind.label)
+                cb.kind = kind.key
+                cb:SetScript("OnClick", function()
+                    ShamShieldDB.soundOff = ShamShieldDB.soundOff or {}
+                    if this:GetChecked() then
+                        ShamShieldDB.soundOff[this.kind] = nil
+                        PlaySound("igMainMenuOptionCheckBoxOn")
+                    else
+                        ShamShieldDB.soundOff[this.kind] = true
+                        PlaySound("igMainMenuOptionCheckBoxOff")
+                    end
+                end)
+                f.soundChecks[k] = cb
 
                 local btn = CreateFrame("Button", "ShamShieldConfigSound" .. k, page,
                                         "UIPanelButtonTemplate")
                 btn:SetWidth(210)
                 btn:SetHeight(22)
-                btn:SetPoint("TOPLEFT", page, "TOPLEFT", 28, -(y + 20))
+                btn:SetPoint("TOPLEFT", page, "TOPLEFT", 28, -(y + 32))
                 btn.kind = kind.key
                 btn:SetScript("OnClick", function()
                     OpenSoundPicker(this)
@@ -1832,10 +1854,10 @@ local function CreateConfigFrame()
                 test:SetText("Test")
                 test.kind = kind.key
                 test:SetScript("OnClick", function()
-                    PlayKind(this.kind)
+                    PlayKind(this.kind, true)
                 end)
 
-                y = y + 56
+                y = y + 64
             end
         end
 
@@ -1898,6 +1920,15 @@ local function CreateConfigFrame()
             this.scaleBox:SetText(string.format("%.1f", sc))
         end
         if this.refreshItems then this.refreshItems() end
+        if this.soundChecks then
+            for k = 1, table.getn(this.soundChecks) do
+                if KindEnabled(this.soundChecks[k].kind) then
+                    this.soundChecks[k]:SetChecked(1)
+                else
+                    this.soundChecks[k]:SetChecked(nil)
+                end
+            end
+        end
         if this.soundButtons then
             for k = 1, table.getn(this.soundButtons) do
                 local btn = this.soundButtons[k]
@@ -1963,11 +1994,11 @@ SlashCmdList["SHAMSHIELD"] = function(msg)
     elseif string.find(msg, "^test") then
         local _, _, which = string.find(msg, "^test%s*(%a*)")
         if which == "low" then
-            PlayKind("low")
+            PlayKind("low", true)
         elseif which == "depleted" then
-            PlayKind("depleted")
+            PlayKind("depleted", true)
         elseif which == "alert" then
-            PlayKind("alert")
+            PlayKind("alert", true)
         else
             DEFAULT_CHAT_FRAME:AddMessage("ShamShield: /ss test low | depleted | alert")
         end
