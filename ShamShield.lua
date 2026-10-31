@@ -932,29 +932,29 @@ local function CanCastShield()
     local st = shieldSlot.state
     if not st.active then return true end
 
-    -- Never refresh a shield that is already full.
+    -- Thresholds (0 = that threshold is off).
+    local minStacks = ShamShieldDB.shieldRefreshStacks or 0
+    local minMinutes = ShamShieldDB.shieldRefreshMinutes or 0
+
+    local timeLow = minMinutes > 0 and st.hasTimer and st.expire
+                    and (st.expire - GetTime()) / 60 <= minMinutes
+
+    -- A full shield is only refreshed when it is running out of TIME. Being
+    -- full on charges never blocks a refresh that the time limit allows.
     if st.count > 0 then
         local max = ShieldMaxCharges(sel)
         if max > 0 and st.count >= max then
-            return false, sel.name .. " is already at maximum charges (" .. max .. ")."
+            if timeLow then return true end
+            return false, sel.name .. " is at maximum charges (" .. max
+                          .. ") and not low enough on time to refresh."
         end
     end
 
-    -- Optional thresholds (0 = that threshold is off). When either is on, an
-    -- active shield may only be refreshed once it is low enough on charges OR
-    -- on time.
-    local minStacks = ShamShieldDB.shieldRefreshStacks or 0
-    local minMinutes = ShamShieldDB.shieldRefreshMinutes or 0
+    -- Below full: when either threshold is on, refresh only once the shield is
+    -- low enough on charges OR on time.
     if minStacks > 0 or minMinutes > 0 then
-        local low = false
-        if minStacks > 0 and st.count > 0 and st.count <= minStacks then
-            low = true
-        end
-        if minMinutes > 0 and st.hasTimer and st.expire
-           and (st.expire - GetTime()) / 60 <= minMinutes then
-            low = true
-        end
-        if not low then
+        local stacksLow = minStacks > 0 and st.count > 0 and st.count <= minStacks
+        if not (stacksLow or timeLow) then
             return false, sel.name .. " is not low enough to refresh yet (see /ss config)."
         end
     end
