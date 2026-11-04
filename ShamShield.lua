@@ -792,10 +792,46 @@ end
 --     ShamShieldDB.recastMinutes minutes or fewer left (0 = never refresh)
 -- GetWeaponEnchantInfo() reports ANY temporary weapon enchant; the tooltip
 -- check then tells shaman imbues apart from everything else.
+-- Is the main hand a fishing pole? Poles are never buffed. Checked three ways
+-- so custom poles are caught too: the item's type, its name, and its tooltip.
+local function MainHandIsFishingPole()
+    local link = GetInventoryItemLink("player", MAINHAND_SLOT)
+    if not link then return false end
+
+    local _, _, id = string.find(link, "item:(%d+)")
+    if id then
+        local name, _, _, _, itemType, subType = GetItemInfo("item:" .. id)
+        if subType and string.find(string.lower(subType), "fishing", 1, true) then
+            return true
+        end
+        if name and string.find(string.lower(name), "fishing pole", 1, true) then
+            return true
+        end
+    end
+
+    PrepTip()
+    scanTip:SetInventoryItem("player", MAINHAND_SLOT)
+    for i = 1, scanTip:NumLines() do
+        local left = getglobal("ShamShieldScanTipTextLeft" .. i)
+        local right = getglobal("ShamShieldScanTipTextRight" .. i)
+        local lt = left and left:GetText()
+        local rt = right and right:GetText()
+        if (lt and string.find(string.lower(lt), "fishing pole", 1, true))
+           or (rt and string.find(string.lower(rt), "fishing pole", 1, true)) then
+            return true
+        end
+    end
+    return false
+end
+
 local function CanCastWeaponBuff()
     local sel = FindKnown(weaponSlot, GetSelected(weaponSlot))
     if not sel then return false end
     if not GetInventoryItemLink("player", MAINHAND_SLOT) then return false end
+
+    if MainHandIsFishingPole() then
+        return false, "your main hand is a fishing pole; not buffing it."
+    end
 
     if sel.isItem and not sel.available then
         return false, "you have no " .. sel.name .. " in your bags."
