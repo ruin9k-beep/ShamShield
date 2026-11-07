@@ -21,8 +21,8 @@
   (seeded with the mana / wizard oils); each can be shown or hidden individually.
   Warning sounds are picked on the Sounds tab of the config window.
   A minimap button (drag it anywhere) opens the config window.
-  The Imbues tab links a weapon to its preferred imbue; the imbue is selected
-  automatically whenever that weapon is in your main hand.
+  The Weapons tab links a weapon to a preferred imbue and shield; they are selected
+  automatically whenever that weapon is in your main hand (each can be switched off).
   Slash: /shamshield (or /ss; on its own it opens the config window)
          config | lock | unlock | reset | sound | test
   Sounds (shield slot only, all toggled by /ss sound):
@@ -1447,7 +1447,7 @@ end)
 ---------------------------------------------------------------------------
 -- Config window (/ss or /ss config), organised in tabs
 ---------------------------------------------------------------------------
-local CONFIG_TABS = { "General", "Visuals", "Limits", "Items", "Sounds", "Imbues" }
+local CONFIG_TABS = { "General", "Visuals", "Limits", "Items", "Sounds", "Weapons" }
 
 -- Checkbox options. To add one: add a line here (pick its tab) and read
 -- ShamShieldDB[key] where needed.
@@ -1536,9 +1536,12 @@ local function ApplyScale(newScale)
     end
 end
 
--- Preferred imbue per weapon ------------------------------------------------
--- ShamShieldDB.weaponPrefs = { { weapon = "Item name", imbue = "Windfury Weapon" }, ... }
--- Only castable imbues (WEAPON_BUFFS) can be chosen, never items.
+-- Preferred imbue and shield per weapon ---------------------------------------
+-- ShamShieldDB.weaponPrefs = { { weapon = "Item name",
+--     imbue = "Windfury Weapon", imbueOn = true/false,
+--     shield = "Water Shield",   shieldOn = true/false }, ... }
+-- A missing imbueOn / shieldOn counts as enabled. Imbues are castable spells only
+-- (WEAPON_BUFFS), never items; shields come from SHIELDS.
 local BuildImbuesPage
 
 do
@@ -1546,7 +1549,7 @@ do
         INVTYPE_WEAPON = true, INVTYPE_2HWEAPON = true,
         INVTYPE_WEAPONMAINHAND = true, INVTYPE_WEAPONOFFHAND = true,
     }
-    local IMBUE_ROW_H = 26
+    local IMBUE_ROW_H = 52
     local lastMainHand = false
 
     local function MainHandName()
@@ -1566,24 +1569,35 @@ do
         return nil
     end
 
-    -- Runs whenever the main hand weapon may have changed. When the weapon is
-    -- new and has a preferred imbue you know, that imbue becomes the selection.
-    -- Changing the selection by hand afterwards sticks until the weapon changes.
+    -- Runs whenever the main hand weapon may have changed. When the weapon is new
+    -- and has enabled preferences, the imbue and / or shield you know become the
+    -- selections. Changing a selection by hand afterwards sticks until the weapon
+    -- changes.
     CheckMainHandWeapon = function()
-        if table.getn(weaponSlot.known) == 0 then return end   -- spellbook not read yet
+        if table.getn(weaponSlot.known) == 0 and table.getn(shieldSlot.known) == 0 then
+            return   -- spellbook not read yet
+        end
         local name = MainHandName()
         if name == lastMainHand then return end
         lastMainHand = name
         if name == "" then return end
 
         local pref = FindPref(name)
-        if pref and FindKnown(weaponSlot, pref.imbue)
+        if not pref then return end
+
+        if pref.imbue and pref.imbueOn ~= false
+           and FindKnown(weaponSlot, pref.imbue)
            and GetSelected(weaponSlot) ~= pref.imbue then
             SelectSpell(weaponSlot, pref.imbue)
         end
+        if pref.shield and pref.shieldOn ~= false
+           and FindKnown(shieldSlot, pref.shield)
+           and GetSelected(shieldSlot) ~= pref.shield then
+            SelectSpell(shieldSlot, pref.shield)
+        end
     end
 
-    -- Re-applies the preference for the weapon that is equipped right now.
+    -- Re-applies the preferences for the weapon that is equipped right now.
     ForcePrefCheck = function()
         lastMainHand = false
         CheckMainHandWeapon()
@@ -1615,21 +1629,6 @@ do
         return list
     end
 
-    -- Icons for the four imbues: the real spell icon once learned, otherwise a
-    -- stock icon so the picker always shows all four.
-    local FALLBACK_ICONS = {
-        ["Rockbiter Weapon"]  = "Interface\\Icons\\Spell_Nature_RockBiter",
-        ["Windfury Weapon"]   = "Interface\\Icons\\Spell_Nature_Cyclone",
-        ["Frostbrand Weapon"] = "Interface\\Icons\\Spell_Frost_FrostBrand",
-        ["Flametongue Weapon"] = "Interface\\Icons\\Spell_Fire_FlameTongue",
-    }
-
-    local function ImbueTexture(name)
-        local sp = FindKnown(weaponSlot, name)
-        if sp and sp.texture then return sp.texture end
-        return FALLBACK_ICONS[name] or "Interface\\Icons\\INV_Misc_QuestionMark"
-    end
-
     local function Truncate(text, n)
         if string.len(text) > n then
             return string.sub(text, 1, n - 3) .. "..."
@@ -1637,23 +1636,40 @@ do
         return text
     end
 
+    -- Icons: the real spell icon once learned, otherwise a stock icon so the
+    -- pickers always show every choice.
+    local FALLBACK_ICONS = {
+        ["Rockbiter Weapon"]   = "Interface\\Icons\\Spell_Nature_RockBiter",
+        ["Windfury Weapon"]    = "Interface\\Icons\\Spell_Nature_Cyclone",
+        ["Frostbrand Weapon"]  = "Interface\\Icons\\Spell_Frost_FrostBrand",
+        ["Flametongue Weapon"] = "Interface\\Icons\\Spell_Fire_FlameTongue",
+        ["Lightning Shield"]   = "Interface\\Icons\\Spell_Nature_LightningShield",
+        ["Water Shield"]       = "Interface\\Icons\\Ability_Shaman_WaterShield",
+        ["Earth Shield"]       = "Interface\\Icons\\Spell_Nature_SkinofEarth",
+    }
+
+    local function SpellTexture(slot, name)
+        local sp = FindKnown(slot, name)
+        if sp and sp.texture then return sp.texture end
+        return FALLBACK_ICONS[name] or "Interface\\Icons\\INV_Misc_QuestionMark"
+    end
+
     BuildImbuesPage = function(f, page, y)
-        local choices = WEAPON_BUFFS
         local rows = {}
         local RefreshRows
 
-        -- A row of imbue icons side by side. The chosen one is bright with a
-        -- glow border, the others are dimmed. Returns { Select = fn, Update = fn }.
-        local function MakePicker(parent, size, gap, point, x, yOff, onSelect)
+        -- A row of spell icons side by side. The chosen one is bright with a glow
+        -- border, the others are dimmed. Returns { Select = fn, Update = fn }.
+        local function MakePicker(parent, slot, list, size, gap, point, x, yOff, onSelect)
             local picker = { buttons = {} }
 
-            for i = 1, table.getn(choices) do
+            for i = 1, table.getn(list) do
                 local b = CreateFrame("Button", nil, parent)
                 b:SetWidth(size)
                 b:SetHeight(size)
                 b:SetPoint(point, parent, point, x + (i - 1) * (size + gap), yOff)
                 b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-                b.imbueName = choices[i]
+                b.spellName = list[i]
 
                 b.icon = b:CreateTexture(nil, "BACKGROUND")
                 b.icon:SetAllPoints(b)
@@ -1668,15 +1684,15 @@ do
                 b.glow:Hide()
 
                 b:SetScript("OnClick", function()
-                    onSelect(this.imbueName)
+                    onSelect(this.spellName)
                 end)
                 b:SetScript("OnEnter", function()
                     GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-                    local sp = FindKnown(weaponSlot, this.imbueName)
+                    local sp = FindKnown(slot, this.spellName)
                     if sp then
                         GameTooltip:SetSpell(sp.index, BOOKTYPE_SPELL)
                     else
-                        GameTooltip:SetText(this.imbueName)
+                        GameTooltip:SetText(this.spellName)
                         GameTooltip:AddLine("Not learned yet", 0.6, 0.6, 0.6)
                     end
                     GameTooltip:Show()
@@ -1690,13 +1706,13 @@ do
 
             picker.Update = function()
                 for i = 1, table.getn(picker.buttons) do
-                    picker.buttons[i].icon:SetTexture(ImbueTexture(choices[i]))
+                    picker.buttons[i].icon:SetTexture(SpellTexture(slot, list[i]))
                 end
             end
-            picker.Select = function(name)
+            picker.Select = function(name)   -- nil = nothing chosen
                 for i = 1, table.getn(picker.buttons) do
                     local b = picker.buttons[i]
-                    if choices[i] == name then
+                    if list[i] == name then
                         b.glow:Show()
                         b.icon:SetVertexColor(1, 1, 1)
                     else
@@ -1707,6 +1723,7 @@ do
             end
 
             picker.Update()
+            picker.Select(nil)
             return picker
         end
 
@@ -1714,10 +1731,12 @@ do
         intro:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 4))
         intro:SetWidth(370)
         intro:SetJustifyH("LEFT")
-        intro:SetText("When a weapon below is in your main hand, its preferred imbue is "
-                      .. "selected automatically. Type the weapon's name or pick one from "
-                      .. "your inventory. Only castable imbues can be chosen.")
-        y = y + 58
+        intro:SetText("When a weapon below is in your main hand, its preferred imbue and "
+                      .. "shield are selected automatically. Type the weapon's name or pick "
+                      .. "one from your inventory, then choose an imbue and / or a shield "
+                      .. "(click a chosen icon again to clear it). Tick or untick each one "
+                      .. "in the list to turn its auto-picking on or off.")
+        y = y + 72
 
         -- Weapon name + inventory picker ----------------------------------------
         local box = CreateFrame("EditBox", "ShamShieldConfigWeaponBox", page, "InputBoxTemplate")
@@ -1735,25 +1754,39 @@ do
         pick:SetText("From inventory")
         y = y + 30
 
-        -- Imbue choice (icons side by side) + Add ----------------------------------
-        local newImbue = choices[1]
+        -- Imbue choice (icons side by side) -----------------------------------------
+        local newImbue = nil
+        local newShield = nil
 
         local imbueLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         imbueLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 32, -(y + 9))
         imbueLabel:SetText("Imbue:")
 
-        local addPicker = MakePicker(page, 28, 6, "TOPLEFT", 78, -y, function(name)
-            newImbue = name
-            f.addPicker.Select(name)
+        local addImbuePicker
+        addImbuePicker = MakePicker(page, weaponSlot, WEAPON_BUFFS, 28, 6, "TOPLEFT", 78, -y,
+                                    function(name)
+            if newImbue == name then newImbue = nil else newImbue = name end
+            addImbuePicker.Select(newImbue)
         end)
-        f.addPicker = addPicker
-        addPicker.Select(newImbue)
+        y = y + 36
+
+        -- Shield choice (icons side by side) + Add -----------------------------------
+        local shieldLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        shieldLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 32, -(y + 9))
+        shieldLabel:SetText("Shield:")
+
+        local addShieldPicker
+        addShieldPicker = MakePicker(page, shieldSlot, SHIELDS, 28, 6, "TOPLEFT", 78, -y,
+                                     function(name)
+            if newShield == name then newShield = nil else newShield = name end
+            addShieldPicker.Select(newShield)
+        end)
 
         local add = CreateFrame("Button", "ShamShieldConfigWeaponAdd", page,
                                 "UIPanelButtonTemplate")
         add:SetWidth(60)
         add:SetHeight(22)
-        add:SetPoint("TOPLEFT", page, "TOPLEFT", 78 + 4 * 34 + 8, -(y + 3))
+        add:SetPoint("TOPLEFT", page, "TOPLEFT", 78 + 3 * 34 + 8, -(y + 3))
         add:SetText("Add")
         y = y + 38
 
@@ -1763,6 +1796,23 @@ do
         empty:SetText("No weapons added yet.")
 
         -- Saved list rows -----------------------------------------------------------
+        local function MakeCheck(row, name, x, tip, onClick)
+            local cb = CreateFrame("CheckButton", name, row, "OptionsCheckButtonTemplate")
+            cb:SetWidth(22)
+            cb:SetHeight(22)
+            cb:SetPoint("TOPLEFT", row, "TOPLEFT", x, -24)
+            cb:SetScript("OnClick", onClick)
+            cb:SetScript("OnEnter", function()
+                GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                GameTooltip:SetText(tip)
+                GameTooltip:Show()
+            end)
+            cb:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+            return cb
+        end
+
         local function GetRow(i)
             if rows[i] then return rows[i] end
 
@@ -1771,29 +1821,59 @@ do
             row:SetHeight(IMBUE_ROW_H)
             row:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -(listTop + (i - 1) * IMBUE_ROW_H))
 
-            local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            label:SetPoint("LEFT", row, "LEFT", 28, 0)
-            label:SetWidth(180)
+            local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            label:SetPoint("TOPLEFT", row, "TOPLEFT", 28, -8)
+            label:SetWidth(280)
             label:SetJustifyH("LEFT")
             row.label = label
-
-            row.picker = MakePicker(row, 20, 2, "LEFT", 214, 0, function(name)
-                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
-                if not pref then return end
-                pref.imbue = name
-                row.picker.Select(name)
-                ForcePrefCheck()
-            end)
 
             local rm = CreateFrame("Button", "ShamShieldConfigPrefRemove" .. i, row,
                                    "UIPanelButtonTemplate")
             rm:SetWidth(64)
             rm:SetHeight(20)
-            rm:SetPoint("LEFT", row, "LEFT", 322, 0)
+            rm:SetPoint("TOPLEFT", row, "TOPLEFT", 322, -4)
             rm:SetText("Remove")
             rm:SetScript("OnClick", function()
                 table.remove(ShamShieldDB.weaponPrefs, this:GetParent().prefIndex)
                 RefreshRows()
+            end)
+
+            -- Imbue: checkbox (auto-pick on / off) + four icons
+            row.imbueCheck = MakeCheck(row, "ShamShieldConfigPrefImbueOn" .. i, 18,
+                                       "Auto-pick this imbue for this weapon", function()
+                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
+                if not pref then return end
+                if this:GetChecked() then pref.imbueOn = true else pref.imbueOn = false end
+                ForcePrefCheck()
+            end)
+            row.imbuePicker = MakePicker(row, weaponSlot, WEAPON_BUFFS, 20, 2, "TOPLEFT", 44, -25,
+                                         function(name)
+                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
+                if not pref then return end
+                pref.imbue = name
+                pref.imbueOn = true
+                row.imbuePicker.Select(name)
+                row.imbueCheck:SetChecked(1)
+                ForcePrefCheck()
+            end)
+
+            -- Shield: checkbox (auto-pick on / off) + three icons
+            row.shieldCheck = MakeCheck(row, "ShamShieldConfigPrefShieldOn" .. i, 168,
+                                        "Auto-pick this shield for this weapon", function()
+                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
+                if not pref then return end
+                if this:GetChecked() then pref.shieldOn = true else pref.shieldOn = false end
+                ForcePrefCheck()
+            end)
+            row.shieldPicker = MakePicker(row, shieldSlot, SHIELDS, 20, 2, "TOPLEFT", 194, -25,
+                                          function(name)
+                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
+                if not pref then return end
+                pref.shield = name
+                pref.shieldOn = true
+                row.shieldPicker.Select(name)
+                row.shieldCheck:SetChecked(1)
+                ForcePrefCheck()
             end)
 
             rows[i] = row
@@ -1806,10 +1886,25 @@ do
 
             for i = 1, n do
                 local row = GetRow(i)
+                local pref = list[i]
                 row.prefIndex = i
-                row.label:SetText(Truncate(list[i].weapon, 30))
-                row.picker.Update()
-                row.picker.Select(list[i].imbue)
+                row.label:SetText(Truncate(pref.weapon, 44))
+
+                row.imbuePicker.Update()
+                row.imbuePicker.Select(pref.imbue)
+                if pref.imbue and pref.imbueOn ~= false then
+                    row.imbueCheck:SetChecked(1)
+                else
+                    row.imbueCheck:SetChecked(nil)
+                end
+
+                row.shieldPicker.Update()
+                row.shieldPicker.Select(pref.shield)
+                if pref.shield and pref.shieldOn ~= false then
+                    row.shieldCheck:SetChecked(1)
+                else
+                    row.shieldCheck:SetChecked(nil)
+                end
                 row:Show()
             end
             for i = n + 1, table.getn(rows) do
@@ -1817,7 +1912,8 @@ do
             end
 
             if n == 0 then empty:Show() else empty:Hide() end
-            if f.addPicker then f.addPicker.Update() end
+            addImbuePicker.Update()
+            addShieldPicker.Update()
 
             local count = n
             if count < 1 then count = 1 end
@@ -1839,14 +1935,27 @@ do
             name = string.gsub(name, "%s+$", "")
             if name == "" then return end
 
-            ShamShieldDB.weaponPrefs = ShamShieldDB.weaponPrefs or {}
-            local existing = FindPref(name)
-            if existing then
-                existing.imbue = newImbue            -- same weapon: change its imbue
-            else
-                table.insert(ShamShieldDB.weaponPrefs,
-                             { weapon = name, imbue = newImbue })
+            if not newImbue and not newShield then
+                DEFAULT_CHAT_FRAME:AddMessage("ShamShield: choose an imbue and / or a shield first.")
+                return
             end
+
+            ShamShieldDB.weaponPrefs = ShamShieldDB.weaponPrefs or {}
+            local pref = FindPref(name)
+            if not pref then
+                pref = { weapon = name }
+                table.insert(ShamShieldDB.weaponPrefs, pref)
+            end
+            -- Same weapon again: only the parts chosen now are changed.
+            if newImbue then
+                pref.imbue = newImbue
+                pref.imbueOn = true
+            end
+            if newShield then
+                pref.shield = newShield
+                pref.shieldOn = true
+            end
+
             box:SetText("")
             RefreshRows()
             ForcePrefCheck()
@@ -2407,7 +2516,7 @@ local function CreateConfigFrame()
             end
         end
 
-        if tabName == "Imbues" then
+        if tabName == "Weapons" then
             y = BuildImbuesPage(f, page, y)
         end
 
