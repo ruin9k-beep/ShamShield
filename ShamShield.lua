@@ -20,6 +20,9 @@
   Weapon flyout also lists the items tracked on the Items tab of the config window
   (seeded with the mana / wizard oils); each can be shown or hidden individually.
   Warning sounds are picked on the Sounds tab of the config window.
+  A minimap button (drag it anywhere) opens the config window.
+  The Imbues tab links a weapon to its preferred imbue; the imbue is selected
+  automatically whenever that weapon is in your main hand.
   Slash: /shamshield (or /ss; on its own it opens the config window)
          config | lock | unlock | reset | sound | test
   Sounds (shield slot only, all toggled by /ss sound):
@@ -1229,6 +1232,95 @@ local function ApplyCombatSettings()
     end
 end
 
+-- Forward declarations (assigned further down, used by earlier code).
+local ToggleConfig, UpdateMinimapButton, CheckMainHandWeapon, ForcePrefCheck
+
+---------------------------------------------------------------------------
+-- Minimap button: click for the options window, drag to put it anywhere
+---------------------------------------------------------------------------
+do
+    local btn = CreateFrame("Button", "ShamShieldMinimapButton", UIParent)
+    btn:SetWidth(31)
+    btn:SetHeight(31)
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetFrameLevel(8)
+    btn:SetMovable(true)
+    btn:SetClampedToScreen(true)
+    btn:RegisterForClicks("LeftButtonUp")
+    btn:RegisterForDrag("LeftButton")
+    btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    btn:SetPoint("CENTER", Minimap, "CENTER", -56, -56)   -- default: on the minimap edge
+    btn:Hide()   -- shown by UpdateMinimapButton once we know this is a Shaman
+
+    local icon = btn:CreateTexture(nil, "BACKGROUND")
+    icon:SetWidth(20)
+    icon:SetHeight(20)
+    icon:SetPoint("CENTER", btn, "CENTER", 0, 1)
+    icon:SetTexture("Interface\\Icons\\Spell_Nature_LightningShield")
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    local border = btn:CreateTexture(nil, "OVERLAY")
+    border:SetWidth(53)
+    border:SetHeight(53)
+    border:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+    btn:SetScript("OnDragStart", function()
+        this.dragging = true
+        GameTooltip:Hide()
+        this:StartMoving()
+    end)
+    btn:SetScript("OnDragStop", function()
+        this:StopMovingOrSizing()
+        this.dragging = nil
+        this.dragTime = GetTime()
+        local left, bottom = this:GetLeft(), this:GetBottom()
+        if left and bottom then
+            ShamShieldDB.minimapX = left
+            ShamShieldDB.minimapY = bottom
+            this:ClearAllPoints()
+            this:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
+        end
+    end)
+
+    btn:SetScript("OnClick", function()
+        -- Ignore the click that can follow the end of a drag.
+        if this.dragTime and GetTime() - this.dragTime < 0.3 then return end
+        ToggleConfig()
+    end)
+
+    btn:SetScript("OnEnter", function()
+        if this.dragging then return end
+        GameTooltip:SetOwner(this, "ANCHOR_LEFT")
+        GameTooltip:SetText("ShamShield")
+        GameTooltip:AddLine("Click: options", 1, 1, 1)
+        GameTooltip:AddLine("Drag: move anywhere", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    -- Applies the saved position and the "hide minimap button" option.
+    UpdateMinimapButton = function()
+        local localized, token = UnitClass("player")
+        if localized ~= "Shaman" and token ~= "SHAMAN" then
+            btn:Hide()
+            return
+        end
+        if ShamShieldDB.minimapX and ShamShieldDB.minimapY and not btn.dragging then
+            btn:ClearAllPoints()
+            btn:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT",
+                         ShamShieldDB.minimapX, ShamShieldDB.minimapY)
+        end
+        if ShamShieldDB.hideMinimapButton then
+            btn:Hide()
+        else
+            btn:Show()
+        end
+    end
+end
+
 ---------------------------------------------------------------------------
 -- Events / timers
 ---------------------------------------------------------------------------
@@ -1248,6 +1340,7 @@ root:SetScript("OnUpdate", function()
     tick = tick + arg1
     if tick >= 0.25 then
         tick = 0
+        CheckMainHandWeapon()   -- apply a weapon's preferred imbue when it is equipped
         if bagDirty then
             bagDirty = false
             ScanSpellbook(weaponSlot)   -- bags changed: refresh the item entries
@@ -1323,6 +1416,7 @@ root:SetScript("OnEvent", function()
         root:SetScale(sc)          -- before RestorePosition: offsets use this scale
         RestorePosition()
         ApplyCombatSettings()
+        UpdateMinimapButton()
     elseif event == "PLAYER_ENTERING_WORLD" or event == "SPELLS_CHANGED"
         or event == "LEARNED_SPELL_IN_TAB" then
         for i = 1, table.getn(slots) do ScanSpellbook(slots[i]) end
@@ -1341,7 +1435,10 @@ root:SetScript("OnEvent", function()
             StaticPopup_Hide("REPLACE_ENCHANT")
         end
     elseif event == "UNIT_INVENTORY_CHANGED" then
-        if arg1 == "player" then Refresh(slots[2]) end
+        if arg1 == "player" then
+            CheckMainHandWeapon()
+            Refresh(slots[2])
+        end
     else
         for i = 1, table.getn(slots) do Refresh(slots[i]) end
     end
@@ -1350,11 +1447,12 @@ end)
 ---------------------------------------------------------------------------
 -- Config window (/ss or /ss config), organised in tabs
 ---------------------------------------------------------------------------
-local CONFIG_TABS = { "General", "Visuals", "Limits", "Items", "Sounds" }
+local CONFIG_TABS = { "General", "Visuals", "Limits", "Items", "Sounds", "Imbues" }
 
 -- Checkbox options. To add one: add a line here (pick its tab) and read
 -- ShamShieldDB[key] where needed.
 local CONFIG_OPTIONS = {
+    { tab = "General", key = "hideMinimapButton", label = "Hide the minimap button" },
     { tab = "General", key = "locked",           label = "Lock the frame position (no moving)" },
     { tab = "General", key = "combatNoMouse",    label = "Make the frame non-interactable in combat" },
     { tab = "General", key = "combatHideFlyout", label = "Hide the flyout buttons in combat" },
@@ -1438,9 +1536,352 @@ local function ApplyScale(newScale)
     end
 end
 
+-- Preferred imbue per weapon ------------------------------------------------
+-- ShamShieldDB.weaponPrefs = { { weapon = "Item name", imbue = "Windfury Weapon" }, ... }
+-- Only castable imbues (WEAPON_BUFFS) can be chosen, never items.
+local BuildImbuesPage
+
+do
+    local WEAPON_EQUIP_LOCS = {
+        INVTYPE_WEAPON = true, INVTYPE_2HWEAPON = true,
+        INVTYPE_WEAPONMAINHAND = true, INVTYPE_WEAPONOFFHAND = true,
+    }
+    local IMBUE_ROW_H = 26
+    local lastMainHand = false
+
+    local function MainHandName()
+        local link = GetInventoryItemLink("player", MAINHAND_SLOT)
+        if not link then return "" end
+        local _, _, name = string.find(link, "%[(.-)%]")
+        return name or ""
+    end
+
+    local function FindPref(name)
+        local list = ShamShieldDB.weaponPrefs
+        if not list then return nil end
+        local lname = string.lower(name)
+        for i = 1, table.getn(list) do
+            if string.lower(list[i].weapon) == lname then return list[i] end
+        end
+        return nil
+    end
+
+    -- Runs whenever the main hand weapon may have changed. When the weapon is
+    -- new and has a preferred imbue you know, that imbue becomes the selection.
+    -- Changing the selection by hand afterwards sticks until the weapon changes.
+    CheckMainHandWeapon = function()
+        if table.getn(weaponSlot.known) == 0 then return end   -- spellbook not read yet
+        local name = MainHandName()
+        if name == lastMainHand then return end
+        lastMainHand = name
+        if name == "" then return end
+
+        local pref = FindPref(name)
+        if pref and FindKnown(weaponSlot, pref.imbue)
+           and GetSelected(weaponSlot) ~= pref.imbue then
+            SelectSpell(weaponSlot, pref.imbue)
+        end
+    end
+
+    -- Re-applies the preference for the weapon that is equipped right now.
+    ForcePrefCheck = function()
+        lastMainHand = false
+        CheckMainHandWeapon()
+    end
+
+    -- Weapons the player has: equipped main / off hand, then bags (no fishing poles).
+    local function CollectWeapons()
+        local list, seen = {}, {}
+
+        local function Add(link)
+            if not link then return end
+            local _, _, id = string.find(link, "item:(%d+)")
+            if not id then return end
+            local name, _, _, _, _, subType, _, equipLoc = GetItemInfo("item:" .. id)
+            if not name or seen[name] then return end
+            if not WEAPON_EQUIP_LOCS[equipLoc or ""] then return end
+            if subType and string.find(string.lower(subType), "fishing", 1, true) then return end
+            seen[name] = true
+            table.insert(list, name)
+        end
+
+        Add(GetInventoryItemLink("player", MAINHAND_SLOT))
+        Add(GetInventoryItemLink("player", OFFHAND_SLOT))
+        for bag = 0, 4 do
+            for slot = 1, GetContainerNumSlots(bag) do
+                Add(GetContainerItemLink(bag, slot))
+            end
+        end
+        return list
+    end
+
+    local function ShortName(spell)
+        local _, _, word = string.find(spell, "^(%S+)")
+        return word or spell
+    end
+
+    local function Truncate(text, n)
+        if string.len(text) > n then
+            return string.sub(text, 1, n - 3) .. "..."
+        end
+        return text
+    end
+
+    BuildImbuesPage = function(f, page, y)
+        local choices = WEAPON_BUFFS
+        local rows = {}
+        local RefreshRows
+
+        local intro = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        intro:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 4))
+        intro:SetWidth(370)
+        intro:SetJustifyH("LEFT")
+        intro:SetText("When a weapon below is in your main hand, its preferred imbue is "
+                      .. "selected automatically. Type the weapon's name or pick one from "
+                      .. "your inventory. Only castable imbues can be chosen.")
+        y = y + 58
+
+        -- Weapon name + inventory picker ----------------------------------------
+        local box = CreateFrame("EditBox", "ShamShieldConfigWeaponBox", page, "InputBoxTemplate")
+        box:SetWidth(220)
+        box:SetHeight(20)
+        box:SetPoint("TOPLEFT", page, "TOPLEFT", 32, -y)
+        box:SetAutoFocus(false)
+        box:SetMaxLetters(60)
+
+        local pick = CreateFrame("Button", "ShamShieldConfigWeaponPick", page,
+                                 "UIPanelButtonTemplate")
+        pick:SetWidth(110)
+        pick:SetHeight(22)
+        pick:SetPoint("LEFT", box, "RIGHT", 8, 0)
+        pick:SetText("From inventory")
+        y = y + 30
+
+        -- Imbue choice (click to cycle) + Add --------------------------------------
+        local newIndex = 1
+        local imbueBtn = CreateFrame("Button", "ShamShieldConfigWeaponImbue", page,
+                                     "UIPanelButtonTemplate")
+        imbueBtn:SetWidth(240)
+        imbueBtn:SetHeight(22)
+        imbueBtn:SetPoint("TOPLEFT", page, "TOPLEFT", 28, -y)
+        imbueBtn:SetText("Imbue: " .. choices[newIndex])
+        imbueBtn:SetScript("OnClick", function()
+            newIndex = newIndex + 1
+            if newIndex > table.getn(choices) then newIndex = 1 end
+            this:SetText("Imbue: " .. choices[newIndex])
+        end)
+
+        local add = CreateFrame("Button", "ShamShieldConfigWeaponAdd", page,
+                                "UIPanelButtonTemplate")
+        add:SetWidth(60)
+        add:SetHeight(22)
+        add:SetPoint("LEFT", imbueBtn, "RIGHT", 8, 0)
+        add:SetText("Add")
+        y = y + 34
+
+        local listTop = y
+        local empty = page:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        empty:SetPoint("TOPLEFT", page, "TOPLEFT", 28, -(listTop + 6))
+        empty:SetText("No weapons added yet.")
+
+        -- Saved list rows -----------------------------------------------------------
+        local function GetRow(i)
+            if rows[i] then return rows[i] end
+
+            local row = CreateFrame("Frame", nil, page)
+            row:SetWidth(400)
+            row:SetHeight(IMBUE_ROW_H)
+            row:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -(listTop + (i - 1) * IMBUE_ROW_H))
+
+            local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            label:SetPoint("LEFT", row, "LEFT", 28, 0)
+            label:SetWidth(180)
+            label:SetJustifyH("LEFT")
+            row.label = label
+
+            local imbue = CreateFrame("Button", "ShamShieldConfigPrefImbue" .. i, row,
+                                      "UIPanelButtonTemplate")
+            imbue:SetWidth(96)
+            imbue:SetHeight(20)
+            imbue:SetPoint("LEFT", row, "LEFT", 214, 0)
+            imbue:SetScript("OnClick", function()
+                local pref = ShamShieldDB.weaponPrefs[this:GetParent().prefIndex]
+                if not pref then return end
+                local idx = 1
+                for c = 1, table.getn(choices) do
+                    if choices[c] == pref.imbue then idx = c end
+                end
+                idx = idx + 1
+                if idx > table.getn(choices) then idx = 1 end
+                pref.imbue = choices[idx]
+                this:SetText(ShortName(pref.imbue))
+                ForcePrefCheck()
+            end)
+            row.imbue = imbue
+
+            local rm = CreateFrame("Button", "ShamShieldConfigPrefRemove" .. i, row,
+                                   "UIPanelButtonTemplate")
+            rm:SetWidth(64)
+            rm:SetHeight(20)
+            rm:SetPoint("LEFT", row, "LEFT", 316, 0)
+            rm:SetText("Remove")
+            rm:SetScript("OnClick", function()
+                table.remove(ShamShieldDB.weaponPrefs, this:GetParent().prefIndex)
+                RefreshRows()
+            end)
+
+            rows[i] = row
+            return row
+        end
+
+        RefreshRows = function()
+            local list = ShamShieldDB.weaponPrefs or {}
+            local n = table.getn(list)
+
+            for i = 1, n do
+                local row = GetRow(i)
+                row.prefIndex = i
+                row.label:SetText(Truncate(list[i].weapon, 30))
+                row.imbue:SetText(ShortName(list[i].imbue))
+                row:Show()
+            end
+            for i = n + 1, table.getn(rows) do
+                rows[i]:Hide()
+            end
+
+            if n == 0 then empty:Show() else empty:Hide() end
+
+            local count = n
+            if count < 1 then count = 1 end
+            page.height = listTop + count * IMBUE_ROW_H + 8
+            page:SetHeight(page.height)
+            -- grow / shrink the window if this tab is the one showing
+            if f.currentTab and f.pages[f.currentTab] == page then
+                f:SetHeight(PAGE_TOP + page.height + PAGE_PAD)
+            end
+        end
+        f.refreshImbues = RefreshRows
+
+        -- Add ----------------------------------------------------------------------
+        local function DoAdd()
+            local text = box:GetText() or ""
+            local _, _, linked = string.find(text, "%[(.-)%]")   -- pasted item link
+            local name = linked or text
+            name = string.gsub(name, "^%s+", "")
+            name = string.gsub(name, "%s+$", "")
+            if name == "" then return end
+
+            ShamShieldDB.weaponPrefs = ShamShieldDB.weaponPrefs or {}
+            local existing = FindPref(name)
+            if existing then
+                existing.imbue = choices[newIndex]           -- same weapon: change its imbue
+            else
+                table.insert(ShamShieldDB.weaponPrefs,
+                             { weapon = name, imbue = choices[newIndex] })
+            end
+            box:SetText("")
+            RefreshRows()
+            ForcePrefCheck()
+        end
+        add:SetScript("OnClick", DoAdd)
+        box:SetScript("OnEnterPressed", function()
+            DoAdd()
+            this:ClearFocus()
+        end)
+        box:SetScript("OnEscapePressed", function()
+            this:SetText("")
+            this:ClearFocus()
+            f:Hide()
+        end)
+
+        -- Inventory picker popup ---------------------------------------------------
+        pick:SetScript("OnClick", function()
+            local picker = f.weaponPicker
+            if not picker then
+                picker = CreateFrame("Frame", "ShamShieldWeaponPicker", f)
+                picker:SetFrameStrata("FULLSCREEN_DIALOG")
+                picker:SetWidth(272)
+                picker:SetBackdrop({
+                    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+                    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                    tile = true, tileSize = 16, edgeSize = 16,
+                    insets = { left = 4, right = 4, top = 4, bottom = 4 },
+                })
+                picker:SetBackdropColor(0, 0, 0, 1)
+                picker:EnableMouse(true)
+                picker.buttons = {}
+
+                picker.msg = picker:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                picker.msg:SetPoint("TOPLEFT", picker, "TOPLEFT", 12, -12)
+
+                -- Close shortly after the mouse leaves the list and its button.
+                picker:SetScript("OnUpdate", function()
+                    if MouseIsOver(this) or MouseIsOver(pick) then
+                        this.idle = 0
+                    else
+                        this.idle = (this.idle or 0) + arg1
+                        if this.idle > 0.8 then this:Hide() end
+                    end
+                end)
+                picker:Hide()
+                f.weaponPicker = picker
+            end
+
+            if picker:IsShown() then
+                picker:Hide()
+                return
+            end
+
+            local list = CollectWeapons()
+            local n = table.getn(list)
+            if n > 16 then n = 16 end
+
+            for i = 1, n do
+                local b = picker.buttons[i]
+                if not b then
+                    b = CreateFrame("Button", nil, picker)
+                    b:SetWidth(256)
+                    b:SetHeight(18)
+                    b:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+                    b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                    b.text:SetPoint("LEFT", b, "LEFT", 4, 0)
+                    b:SetScript("OnClick", function()
+                        box:SetText(this.weaponName)
+                        picker:Hide()
+                    end)
+                    picker.buttons[i] = b
+                end
+                b.weaponName = list[i]
+                b.text:SetText(list[i])
+                b:ClearAllPoints()
+                b:SetPoint("TOPLEFT", picker, "TOPLEFT", 8, -(8 + (i - 1) * 18))
+                b:Show()
+            end
+            for i = n + 1, table.getn(picker.buttons) do
+                picker.buttons[i]:Hide()
+            end
+
+            if n == 0 then
+                picker.msg:SetText("No weapons found in your bags or equipped.")
+                picker:SetHeight(34)
+            else
+                picker.msg:SetText("")
+                picker:SetHeight(n * 18 + 16)
+            end
+
+            picker.idle = 0
+            picker:ClearAllPoints()
+            picker:SetPoint("TOPLEFT", pick, "BOTTOMLEFT", 0, -2)
+            picker:Show()
+        end)
+
+        return listTop + IMBUE_ROW_H + 8
+    end
+end
+
 local function CreateConfigFrame()
     local f = CreateFrame("Frame", "ShamShieldConfig", UIParent)
-    f:SetWidth(360)
+    f:SetWidth(420)
     f:SetHeight(200)
     f:SetPoint("CENTER", UIParent, "CENTER", 0, 100)
     f:SetFrameStrata("DIALOG")
@@ -1539,7 +1980,7 @@ local function CreateConfigFrame()
     local function BuildPage(tabName)
         local page = CreateFrame("Frame", nil, f)
         page:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -PAGE_TOP)
-        page:SetWidth(360)
+        page:SetWidth(420)
         local y = 0   -- how far down the next row goes
 
         -- Checkboxes
@@ -1561,6 +2002,7 @@ local function CreateConfigFrame()
                         PlaySound("igMainMenuOptionCheckBoxOff")
                     end
                     ApplyCombatSettings()
+                    UpdateMinimapButton()
                 end)
                 table.insert(f.checks, cb)
                 y = y + 28
@@ -1897,6 +2339,10 @@ local function CreateConfigFrame()
             end
         end
 
+        if tabName == "Imbues" then
+            y = BuildImbuesPage(f, page, y)
+        end
+
         page.height = y
         page:SetHeight(y)
         page:Hide()
@@ -1916,6 +2362,7 @@ local function CreateConfigFrame()
             end
         end
         if f.soundPicker then f.soundPicker:Hide() end
+        if f.weaponPicker then f.weaponPicker:Hide() end
         f:SetHeight(PAGE_TOP + f.pages[index].height + PAGE_PAD)
     end
 
@@ -1923,9 +2370,9 @@ local function CreateConfigFrame()
         f.pages[i] = BuildPage(CONFIG_TABS[i])
 
         local tab = CreateFrame("Button", "ShamShieldConfigTab" .. i, f, "UIPanelButtonTemplate")
-        tab:SetWidth(64)
+        tab:SetWidth(60)
         tab:SetHeight(22)
-        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 18 + (i - 1) * 66, -40)
+        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 18 + (i - 1) * 62, -40)
         tab:SetText(CONFIG_TABS[i])
         tab.index = i
         tab:SetScript("OnClick", function()
@@ -1956,6 +2403,7 @@ local function CreateConfigFrame()
             this.scaleBox:SetText(string.format("%.1f", sc))
         end
         if this.refreshItems then this.refreshItems() end
+        if this.refreshImbues then this.refreshImbues() end
         if this.soundChecks then
             for k = 1, table.getn(this.soundChecks) do
                 if KindEnabled(this.soundChecks[k].kind) then
@@ -1984,6 +2432,15 @@ local function CreateConfigFrame()
     return f
 end
 
+ToggleConfig = function()
+    if not config then config = CreateConfigFrame() end
+    if config:IsShown() then
+        config:Hide()
+    else
+        config:Show()
+    end
+end
+
 local function SyncConfigChecks()
     if not config then return end
     for i = 1, table.getn(config.checks) do
@@ -2005,12 +2462,7 @@ SlashCmdList["SHAMSHIELD"] = function(msg)
     msg = string.lower(msg or "")
     -- "/ss" on its own opens the config window, same as "/ss config".
     if msg == "config" or string.find(msg, "^%s*$") then
-        if not config then config = CreateConfigFrame() end
-        if config:IsShown() then
-            config:Hide()
-        else
-            config:Show()
-        end
+        ToggleConfig()
     elseif msg == "lock" then
         ShamShieldDB.locked = true
         SyncConfigChecks()
