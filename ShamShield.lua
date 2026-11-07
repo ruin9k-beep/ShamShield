@@ -1615,9 +1615,19 @@ do
         return list
     end
 
-    local function ShortName(spell)
-        local _, _, word = string.find(spell, "^(%S+)")
-        return word or spell
+    -- Icons for the four imbues: the real spell icon once learned, otherwise a
+    -- stock icon so the picker always shows all four.
+    local FALLBACK_ICONS = {
+        ["Rockbiter Weapon"]  = "Interface\\Icons\\Spell_Nature_RockBiter",
+        ["Windfury Weapon"]   = "Interface\\Icons\\Spell_Nature_Cyclone",
+        ["Frostbrand Weapon"] = "Interface\\Icons\\Spell_Frost_FrostBrand",
+        ["Flametongue Weapon"] = "Interface\\Icons\\Spell_Fire_FlameTongue",
+    }
+
+    local function ImbueTexture(name)
+        local sp = FindKnown(weaponSlot, name)
+        if sp and sp.texture then return sp.texture end
+        return FALLBACK_ICONS[name] or "Interface\\Icons\\INV_Misc_QuestionMark"
     end
 
     local function Truncate(text, n)
@@ -1631,6 +1641,74 @@ do
         local choices = WEAPON_BUFFS
         local rows = {}
         local RefreshRows
+
+        -- A row of imbue icons side by side. The chosen one is bright with a
+        -- glow border, the others are dimmed. Returns { Select = fn, Update = fn }.
+        local function MakePicker(parent, size, gap, point, x, yOff, onSelect)
+            local picker = { buttons = {} }
+
+            for i = 1, table.getn(choices) do
+                local b = CreateFrame("Button", nil, parent)
+                b:SetWidth(size)
+                b:SetHeight(size)
+                b:SetPoint(point, parent, point, x + (i - 1) * (size + gap), yOff)
+                b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+                b.imbueName = choices[i]
+
+                b.icon = b:CreateTexture(nil, "BACKGROUND")
+                b.icon:SetAllPoints(b)
+                b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+                b.glow = b:CreateTexture(nil, "OVERLAY")
+                b.glow:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+                b.glow:SetBlendMode("ADD")
+                b.glow:SetWidth(size * 1.9)
+                b.glow:SetHeight(size * 1.9)
+                b.glow:SetPoint("CENTER", b, "CENTER", 0, 0)
+                b.glow:Hide()
+
+                b:SetScript("OnClick", function()
+                    onSelect(this.imbueName)
+                end)
+                b:SetScript("OnEnter", function()
+                    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                    local sp = FindKnown(weaponSlot, this.imbueName)
+                    if sp then
+                        GameTooltip:SetSpell(sp.index, BOOKTYPE_SPELL)
+                    else
+                        GameTooltip:SetText(this.imbueName)
+                        GameTooltip:AddLine("Not learned yet", 0.6, 0.6, 0.6)
+                    end
+                    GameTooltip:Show()
+                end)
+                b:SetScript("OnLeave", function()
+                    GameTooltip:Hide()
+                end)
+
+                picker.buttons[i] = b
+            end
+
+            picker.Update = function()
+                for i = 1, table.getn(picker.buttons) do
+                    picker.buttons[i].icon:SetTexture(ImbueTexture(choices[i]))
+                end
+            end
+            picker.Select = function(name)
+                for i = 1, table.getn(picker.buttons) do
+                    local b = picker.buttons[i]
+                    if choices[i] == name then
+                        b.glow:Show()
+                        b.icon:SetVertexColor(1, 1, 1)
+                    else
+                        b.glow:Hide()
+                        b.icon:SetVertexColor(0.45, 0.45, 0.45)
+                    end
+                end
+            end
+
+            picker.Update()
+            return picker
+        end
 
         local intro = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         intro:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 4))
@@ -1657,27 +1735,27 @@ do
         pick:SetText("From inventory")
         y = y + 30
 
-        -- Imbue choice (click to cycle) + Add --------------------------------------
-        local newIndex = 1
-        local imbueBtn = CreateFrame("Button", "ShamShieldConfigWeaponImbue", page,
-                                     "UIPanelButtonTemplate")
-        imbueBtn:SetWidth(240)
-        imbueBtn:SetHeight(22)
-        imbueBtn:SetPoint("TOPLEFT", page, "TOPLEFT", 28, -y)
-        imbueBtn:SetText("Imbue: " .. choices[newIndex])
-        imbueBtn:SetScript("OnClick", function()
-            newIndex = newIndex + 1
-            if newIndex > table.getn(choices) then newIndex = 1 end
-            this:SetText("Imbue: " .. choices[newIndex])
+        -- Imbue choice (icons side by side) + Add ----------------------------------
+        local newImbue = choices[1]
+
+        local imbueLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        imbueLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 32, -(y + 9))
+        imbueLabel:SetText("Imbue:")
+
+        local addPicker = MakePicker(page, 28, 6, "TOPLEFT", 78, -y, function(name)
+            newImbue = name
+            f.addPicker.Select(name)
         end)
+        f.addPicker = addPicker
+        addPicker.Select(newImbue)
 
         local add = CreateFrame("Button", "ShamShieldConfigWeaponAdd", page,
                                 "UIPanelButtonTemplate")
         add:SetWidth(60)
         add:SetHeight(22)
-        add:SetPoint("LEFT", imbueBtn, "RIGHT", 8, 0)
+        add:SetPoint("TOPLEFT", page, "TOPLEFT", 78 + 4 * 34 + 8, -(y + 3))
         add:SetText("Add")
-        y = y + 34
+        y = y + 38
 
         local listTop = y
         local empty = page:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -1699,31 +1777,19 @@ do
             label:SetJustifyH("LEFT")
             row.label = label
 
-            local imbue = CreateFrame("Button", "ShamShieldConfigPrefImbue" .. i, row,
-                                      "UIPanelButtonTemplate")
-            imbue:SetWidth(96)
-            imbue:SetHeight(20)
-            imbue:SetPoint("LEFT", row, "LEFT", 214, 0)
-            imbue:SetScript("OnClick", function()
-                local pref = ShamShieldDB.weaponPrefs[this:GetParent().prefIndex]
+            row.picker = MakePicker(row, 20, 2, "LEFT", 214, 0, function(name)
+                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
                 if not pref then return end
-                local idx = 1
-                for c = 1, table.getn(choices) do
-                    if choices[c] == pref.imbue then idx = c end
-                end
-                idx = idx + 1
-                if idx > table.getn(choices) then idx = 1 end
-                pref.imbue = choices[idx]
-                this:SetText(ShortName(pref.imbue))
+                pref.imbue = name
+                row.picker.Select(name)
                 ForcePrefCheck()
             end)
-            row.imbue = imbue
 
             local rm = CreateFrame("Button", "ShamShieldConfigPrefRemove" .. i, row,
                                    "UIPanelButtonTemplate")
             rm:SetWidth(64)
             rm:SetHeight(20)
-            rm:SetPoint("LEFT", row, "LEFT", 316, 0)
+            rm:SetPoint("LEFT", row, "LEFT", 322, 0)
             rm:SetText("Remove")
             rm:SetScript("OnClick", function()
                 table.remove(ShamShieldDB.weaponPrefs, this:GetParent().prefIndex)
@@ -1742,7 +1808,8 @@ do
                 local row = GetRow(i)
                 row.prefIndex = i
                 row.label:SetText(Truncate(list[i].weapon, 30))
-                row.imbue:SetText(ShortName(list[i].imbue))
+                row.picker.Update()
+                row.picker.Select(list[i].imbue)
                 row:Show()
             end
             for i = n + 1, table.getn(rows) do
@@ -1750,6 +1817,7 @@ do
             end
 
             if n == 0 then empty:Show() else empty:Hide() end
+            if f.addPicker then f.addPicker.Update() end
 
             local count = n
             if count < 1 then count = 1 end
@@ -1774,10 +1842,10 @@ do
             ShamShieldDB.weaponPrefs = ShamShieldDB.weaponPrefs or {}
             local existing = FindPref(name)
             if existing then
-                existing.imbue = choices[newIndex]           -- same weapon: change its imbue
+                existing.imbue = newImbue            -- same weapon: change its imbue
             else
                 table.insert(ShamShieldDB.weaponPrefs,
-                             { weapon = name, imbue = choices[newIndex] })
+                             { weapon = name, imbue = newImbue })
             end
             box:SetText("")
             RefreshRows()
