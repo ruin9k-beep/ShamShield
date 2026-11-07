@@ -76,7 +76,7 @@ local FONT       = "Fonts\\FRIZQT__.TTF"
 local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local SOUND_INTERVAL = 5            -- seconds between alerts
 -- "No shield" alert, every 5 seconds in combat. A sound file path or a
--- PlaySound name both work. Other options to try (test with /ss test alert):
+-- PlaySound name both work. Other options to try:
 --   Sound\\Spells\\Bloodlust.wav    Sound\\Creature\\Murloc\\mMurlocAggroOld.wav
 --   Sound\\Doodad\\G_GongTroll01.wav
 local ALERT_SOUND = "Sound\\Doodad\\G_GongTroll01.wav"
@@ -86,9 +86,8 @@ local LOW_CHARGES = 3                -- warn at this many charges and below
 -- Played each time a charge is used (3, 2, 1). A game sound FILE (any path
 -- containing a backslash) or a PlaySound name both work. Other bells to try:
 --   Sound\\Doodad\\BellTollHorde.wav  Sound\\Doodad\\BellTollAlliance.wav
---   Sound\\Doodad\\BellTollTribal.wav  (test with /ss test low)
+--   Sound\\Doodad\\BellTollTribal.wav
 local LOW_SOUND = "Sound\\Doodad\\BellTollNightElf.wav"
-local FALLBACK_SOUND = "TellMessage"   -- used if this client cannot play sound files
 local DEPLETED_SOUND = "igQuestFailed" -- played when the shield runs out
 
 local MAINHAND_SLOT = 16
@@ -97,11 +96,7 @@ local OFFHAND_SLOT  = 17
 -- Plays an alert: either a PlaySound name ("RaidWarning") or a sound file path.
 local function PlayAlert(sound)
     if string.find(sound, "\\", 1, true) then
-        if PlaySoundFile then
-            PlaySoundFile(sound)
-        else
-            PlaySound(FALLBACK_SOUND)
-        end
+        PlaySoundFile(sound)
     else
         PlaySound(sound)
     end
@@ -792,9 +787,16 @@ end
 --                                                                the settings say
 --   * main hand has a DIFFERENT shaman imbue                  -> yes (swap it)
 --   * main hand has the SAME shaman imbue                     -> only once it has
---     ShamShieldDB.recastMinutes minutes or fewer left (0 = never refresh)
+--     its own minutes or charges limit or fewer left (0 = never refresh)
 -- GetWeaponEnchantInfo() reports ANY temporary weapon enchant; the tooltip
 -- check then tells shaman imbues apart from everything else.
+-- Per-spell refresh limits (Limits tab): ShamShieldDB.limits[spellName] =
+-- { stacks = n, minutes = n }. which = "stacks" or "minutes"; 0 / unset = off.
+local function SpellLimit(name, which)
+    local t = ShamShieldDB.limits and ShamShieldDB.limits[name]
+    return (t and t[which]) or 0
+end
+
 -- Is the main hand a fishing pole? Poles are never buffed. Checked three ways
 -- so custom poles are caught too: the item's type, its name, and its tooltip.
 local function MainHandIsFishingPole()
@@ -850,18 +852,21 @@ local function CanCastWeaponBuff()
 
     -- Optional: item-based buffs (oils, stones, ...) are never overwritten,
     -- whether by a spell imbue, a different item, or a refresh of the same one.
-    if IsWeaponItem(current) and ShamShieldDB.neverOverwriteItems then
-        return false, current .. " is on your weapon; not overwriting item buffs (see /ss config)."
+    -- Exception: with less than 60 seconds left, the buff may be replaced.
+    local itemAlmostGone = mhExp and mhExp > 0 and mhExp < 60000
+    if IsWeaponItem(current) and ShamShieldDB.neverOverwriteItems and not itemAlmostGone then
+        return false, current .. " is on your weapon; not overwriting item buffs until under 60 seconds are left (see /ss config)."
     end
 
     if current ~= sel.name then return true end
 
-    local minutes = ShamShieldDB.recastMinutes or 0
-    if mhExp and mhExp > 0 and (mhExp / 60000) <= minutes then
+    -- Same buff again: refresh only when it is low on time, using
+    -- this buff's own limits (0 = off).
+    local minutes = SpellLimit(sel.name, "minutes")
+    if minutes > 0 and mhExp and mhExp > 0 and (mhExp / 60000) <= minutes then
         return true
     end
-    return false, sel.name .. " is still active with more than " .. minutes
-                  .. " min left; not recasting."
+    return false, sel.name .. " is still active and not low enough to refresh (see /ss config)."
 end
 
 -- Maximum charges of a shield: the number in its spell tooltip ("3 charges"),
@@ -972,8 +977,8 @@ local function CanCastShield()
     if not st.active then return true end
 
     -- Thresholds (0 = that threshold is off).
-    local minStacks = ShamShieldDB.shieldRefreshStacks or 0
-    local minMinutes = ShamShieldDB.shieldRefreshMinutes or 0
+    local minStacks = SpellLimit(sel.name, "stacks")
+    local minMinutes = SpellLimit(sel.name, "minutes")
 
     local timeLow = minMinutes > 0 and st.hasTimer and st.expire
                     and (st.expire - GetTime()) / 60 <= minMinutes
@@ -1457,30 +1462,15 @@ local CONFIG_OPTIONS = {
     { tab = "General", key = "combatNoMouse",    label = "Make the frame non-interactable in combat" },
     { tab = "General", key = "combatHideFlyout", label = "Hide the flyout buttons in combat" },
     { tab = "Limits",  key = "alwaysRecastWater", label = "Always allow Water Shield recast" },
-    { tab = "Limits",  key = "neverOverwriteItems", label = "Never overwrite item buffs (oils, stones)" },
+    { tab = "Limits",  key = "neverOverwriteItems", label = "Never overwrite item buffs" },
 }
 
 -- Number options: typed into a box. max caps the value, 0 is always allowed.
 local NUMBER_OPTIONS = {
-    { tab = "Limits", key = "recastMinutes", unit = "minutes", max = 120, integer = false,
-      label = "Weapon imbue: recast it only when it has this many minutes "
-              .. "(or fewer) left. 0 = never refresh an active imbue. "
-              .. "Stones, oils and poisons are never overwritten." },
-    { tab = "Limits", key = "shieldRefreshStacks", unit = "charges", max = 99, integer = true,
-      label = "Shield: refresh it only when it has this many charges "
-              .. "(or fewer) left. 0 = off. A full shield is never refreshed." },
-    { tab = "Limits", key = "shieldRefreshMinutes", unit = "minutes", max = 120, integer = false,
-      label = "Shield: refresh it only when it has this many minutes "
-              .. "(or fewer) left. 0 = off. If both shield options are on, "
-              .. "either one allows a refresh." },
-    { tab = "Limits", key = "earthShieldHealthPercent", unit = "% health", max = 100, integer = true,
-      label = "Health: below this percentage of your health, the shield button "
-              .. "and hotkey always cast Earth Shield (if learned), ignoring all "
-              .. "other shield settings. Takes priority over the mana option. 0 = off." },
-    { tab = "Limits", key = "waterShieldManaPercent", unit = "% mana", max = 100, integer = true,
-      label = "Mana: below this percentage of your mana, the shield button and "
-              .. "hotkey always cast Water Shield (if learned), ignoring all "
-              .. "other shield settings. 0 = off." },
+    { tab = "Limits", key = "earthShieldHealthPercent", spell = "Earth Shield", unit = "% health", max = 100, integer = true,
+      label = "" },
+    { tab = "Limits", key = "waterShieldManaPercent", spell = "Water Shield", unit = "% mana", max = 100, integer = true,
+      label = "" },
 }
 local NUMBER_ROW_H = 74
 local ITEM_ROW_H = 26
@@ -1536,13 +1526,48 @@ local function ApplyScale(newScale)
     end
 end
 
+-- Limit boxes (blank = off). box.spellName and box.which ("stacks" / "minutes")
+-- say which limit the box edits.
+local function ShowLimitBox(box)
+    local t = ShamShieldDB.limits and ShamShieldDB.limits[box.spellName]
+    local v = t and t[box.which]
+    if v and v > 0 then
+        box:SetText(tostring(v))
+    else
+        box:SetText("")
+    end
+end
+
+local function CommitLimitBox(box)
+    if not box.spellName then return end
+    local text = string.gsub(box:GetText() or "", "%s+", "")
+    ShamShieldDB.limits = ShamShieldDB.limits or {}
+    local t = ShamShieldDB.limits[box.spellName] or {}
+    if text == "" then
+        t[box.which] = nil
+    else
+        local n = tonumber(text)
+        if n and n >= 0 then
+            local max = 120
+            if box.which == "stacks" then
+                n = math.floor(n)
+                max = 99
+            end
+            if n > max then n = max end
+            t[box.which] = n
+        end
+    end
+    ShamShieldDB.limits[box.spellName] = t
+    ShowLimitBox(box)   -- normalize, or revert if the entry was invalid
+end
+
 -- Preferred imbue and shield per weapon ---------------------------------------
 -- ShamShieldDB.weaponPrefs = { { weapon = "Item name",
 --     imbue = "Windfury Weapon", imbueOn = true/false,
 --     shield = "Water Shield",   shieldOn = true/false }, ... }
 -- A missing imbueOn / shieldOn counts as enabled. Imbues are castable spells only
 -- (WEAPON_BUFFS), never items; shields come from SHIELDS.
-local BuildImbuesPage
+local BuildImbuesPage, BuildLimitsGrid, SpellTexture
 
 do
     local WEAPON_EQUIP_LOCS = {
@@ -1648,10 +1673,130 @@ do
         ["Earth Shield"]       = "Interface\\Icons\\Spell_Nature_SkinofEarth",
     }
 
-    local function SpellTexture(slot, name)
+    SpellTexture = function(slot, name)
         local sp = FindKnown(slot, name)
         if sp and sp.texture then return sp.texture end
         return FALLBACK_ICONS[name] or "Interface\\Icons\\INV_Misc_QuestionMark"
+    end
+
+    -- Limits tab: each shield and imbue with its own charges / minutes boxes
+    -- below its icon.
+    BuildLimitsGrid = function(f, page, y)
+        local spells = {}
+        for i = 1, table.getn(SHIELDS) do
+            table.insert(spells, { name = SHIELDS[i], slot = shieldSlot })
+        end
+        for i = 1, table.getn(WEAPON_BUFFS) do
+            table.insert(spells, { name = WEAPON_BUFFS[i], slot = weaponSlot })
+        end
+        local COL_X, COL_W = 70, 46
+        local cells = {}
+
+        local intro = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        intro:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 6))
+        intro:SetWidth(370)
+        intro:SetJustifyH("LEFT")
+        intro:SetText("Refresh when at or below these limits. Blank or 0 = off.")
+        y = y + 26
+
+        local c1 = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        c1:SetPoint("TOPLEFT", page, "TOPLEFT", COL_X, -y)
+        c1:SetText("Shields")
+        local c2 = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        c2:SetPoint("TOPLEFT", page, "TOPLEFT", COL_X + table.getn(SHIELDS) * COL_W, -y)
+        c2:SetText("Imbues")
+        y = y + 16
+
+        local l1 = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        l1:SetPoint("TOPLEFT", page, "TOPLEFT", 22, -(y + 38))
+        l1:SetText("Charges")
+        local l2 = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        l2:SetPoint("TOPLEFT", page, "TOPLEFT", 22, -(y + 62))
+        l2:SetText("Minutes")
+
+        for i = 1, table.getn(spells) do
+            local sp = spells[i]
+            local x = COL_X + (i - 1) * COL_W
+            local cell = { spell = sp }
+
+            local icon = CreateFrame("Button", nil, page)
+            icon:SetWidth(30)
+            icon:SetHeight(30)
+            icon:SetPoint("TOPLEFT", page, "TOPLEFT", x + 5, -y)
+            icon.tex = icon:CreateTexture(nil, "BACKGROUND")
+            icon.tex:SetAllPoints(icon)
+            icon.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            icon.spell = sp
+            icon:SetScript("OnEnter", function()
+                GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                local known = FindKnown(this.spell.slot, this.spell.name)
+                if known then
+                    GameTooltip:SetSpell(known.index, BOOKTYPE_SPELL)
+                else
+                    GameTooltip:SetText(this.spell.name)
+                    GameTooltip:AddLine("Not learned yet", 0.6, 0.6, 0.6)
+                end
+                GameTooltip:Show()
+            end)
+            icon:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+            cell.icon = icon
+
+            local which = { "stacks", "minutes" }
+            -- Imbues are timed only, so they get no charges box.
+            for w = (sp.slot == weaponSlot) and 2 or 1, 2 do
+                local box = CreateFrame("EditBox", "ShamShieldLimit" .. i .. which[w], page,
+                                        "InputBoxTemplate")
+                box:SetWidth(40)
+                box:SetHeight(20)
+                box:SetPoint("TOPLEFT", page, "TOPLEFT", x + 2, -(y + 34 + (w - 1) * 24))
+                box:SetAutoFocus(false)
+                box:SetMaxLetters(4)
+                box:SetJustifyH("CENTER")
+                box.spellName = sp.name
+                box.which = which[w]
+                box:SetScript("OnEnterPressed", function()
+                    CommitLimitBox(this)
+                    this:ClearFocus()
+                end)
+                box:SetScript("OnEditFocusLost", function()
+                    CommitLimitBox(this)
+                end)
+                box:SetScript("OnEscapePressed", function()
+                    ShowLimitBox(this)
+                    this:ClearFocus()
+                    f:Hide()
+                end)
+                cell[which[w]] = box
+            end
+            cells[i] = cell
+        end
+
+        f.refreshLimits = function()
+            for i = 1, table.getn(f.numIcons) do
+                local ic = f.numIcons[i]
+                ic.tex:SetTexture(SpellTexture(shieldSlot, ic.spellName))
+                if FindKnown(shieldSlot, ic.spellName) then
+                    ic.tex:SetVertexColor(1, 1, 1)
+                else
+                    ic.tex:SetVertexColor(0.45, 0.45, 0.45)
+                end
+            end
+            for i = 1, table.getn(cells) do
+                local cell = cells[i]
+                cell.icon.tex:SetTexture(SpellTexture(cell.spell.slot, cell.spell.name))
+                if FindKnown(cell.spell.slot, cell.spell.name) then
+                    cell.icon.tex:SetVertexColor(1, 1, 1)
+                else
+                    cell.icon.tex:SetVertexColor(0.45, 0.45, 0.45)
+                end
+                if cell.stacks then ShowLimitBox(cell.stacks) end
+                ShowLimitBox(cell.minutes)
+            end
+        end
+
+        return y + 92
     end
 
     BuildImbuesPage = function(f, page, y)
@@ -2123,6 +2268,7 @@ local function CreateConfigFrame()
     f.tabButtons = {}
     f.checks = {}
     f.boxes = {}
+    f.numIcons = {}
 
     -- Sound picker popup: one shared list, reopened under whichever picker
     -- button was clicked. Choosing an entry saves it and previews the sound.
@@ -2284,17 +2430,64 @@ local function CreateConfigFrame()
             if opt.tab == tabName then
                 boxIndex = boxIndex + 1
 
-                local label = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                label:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 6))
-                label:SetWidth(310)
-                label:SetJustifyH("LEFT")
-                label:SetText(opt.label)
-
                 local box = CreateFrame("EditBox", "ShamShieldConfigNumber" .. boxIndex,
                                         page, "InputBoxTemplate")
                 box:SetWidth(50)
                 box:SetHeight(20)
-                box:SetPoint("TOPLEFT", page, "TOPLEFT", 32, -(y + 50))
+                if opt.spell then
+                    -- "Auto cast [icon] Spell Name below this percentage."
+                    local pre = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    pre:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 4))
+                    pre:SetText("Auto cast")
+
+                    local nameBtn = CreateFrame("Button", nil, page)
+                    nameBtn:SetPoint("LEFT", pre, "RIGHT", 4, 0)
+                    local nameText = nameBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                    nameText:SetPoint("LEFT", nameBtn, "LEFT", 0, 0)
+                    nameText:SetText(opt.spell)
+                    nameBtn:SetWidth(nameText:GetStringWidth() + 2)
+                    nameBtn:SetHeight(14)
+                    nameBtn.spellName = opt.spell
+
+                    local post = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    post:SetPoint("LEFT", nameBtn, "RIGHT", 4, 0)
+                    post:SetText("below this percentage.")
+
+                    local ic = CreateFrame("Button", nil, page)
+                    ic:SetWidth(30)
+                    ic:SetHeight(30)
+                    ic:SetPoint("TOPLEFT", page, "TOPLEFT", 28, -(y + 24))
+                    ic.tex = ic:CreateTexture(nil, "BACKGROUND")
+                    ic.tex:SetAllPoints(ic)
+                    ic.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                    ic.spellName = opt.spell
+                    table.insert(f.numIcons, ic)
+
+                    local function Tip()
+                        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                        local known = FindKnown(shieldSlot, this.spellName)
+                        if known then
+                            GameTooltip:SetSpell(known.index, BOOKTYPE_SPELL)
+                        else
+                            GameTooltip:SetText(this.spellName)
+                            GameTooltip:AddLine("Not learned yet", 0.6, 0.6, 0.6)
+                        end
+                        GameTooltip:Show()
+                    end
+                    local function TipOff() GameTooltip:Hide() end
+                    ic:SetScript("OnEnter", Tip)
+                    ic:SetScript("OnLeave", TipOff)
+                    nameBtn:SetScript("OnEnter", Tip)
+                    nameBtn:SetScript("OnLeave", TipOff)
+                    box:SetPoint("TOPLEFT", page, "TOPLEFT", 68, -(y + 29))
+                else
+                    local label = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    label:SetPoint("TOPLEFT", page, "TOPLEFT", 26, -(y + 6))
+                    label:SetWidth(310)
+                    label:SetJustifyH("LEFT")
+                    label:SetText(opt.label)
+                    box:SetPoint("TOPLEFT", page, "TOPLEFT", 32, -(y + 50))
+                end
                 box:SetAutoFocus(false)
                 box:SetMaxLetters(5)
                 box.opt = opt
@@ -2317,7 +2510,7 @@ local function CreateConfigFrame()
                 end)
 
                 table.insert(f.boxes, box)
-                y = y + NUMBER_ROW_H
+                y = y + (opt.spell and 66 or NUMBER_ROW_H)
             end
         end
 
@@ -2329,8 +2522,9 @@ local function CreateConfigFrame()
             intro:SetJustifyH("LEFT")
             intro:SetText("Items tracked as weapon buffs (oils, stones, ...). Tick a box "
                           .. "to show the item in the weapon flyout; untick to hide it. "
-                          .. "Type the exact item name to add one.")
-            y = y + 56
+                          .. "Type the exact item name to add one. The box next to an item is "
+                          .. "the minutes left at which it may be refreshed (blank = never).")
+            y = y + 70
 
             local box = CreateFrame("EditBox", "ShamShieldConfigItemBox", page, "InputBoxTemplate")
             box:SetWidth(200)
@@ -2428,7 +2622,7 @@ local function CreateConfigFrame()
                 if f.itemRows[i] then return f.itemRows[i] end
 
                 local row = CreateFrame("Frame", nil, page)
-                row:SetWidth(330)
+                row:SetWidth(400)
                 row:SetHeight(ITEM_ROW_H)
                 row:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -(f.itemListTop + (i - 1) * ITEM_ROW_H))
 
@@ -2457,6 +2651,34 @@ local function CreateConfigFrame()
                     RemoveItem(this:GetParent().itemName)
                 end)
 
+                -- Minutes left at which this item may be refreshed (blank = never).
+                local minBox = CreateFrame("EditBox", "ShamShieldConfigItemMin" .. i, row,
+                                           "InputBoxTemplate")
+                minBox:SetWidth(36)
+                minBox:SetHeight(20)
+                minBox:SetPoint("LEFT", row, "LEFT", 232, 0)
+                minBox:SetAutoFocus(false)
+                minBox:SetMaxLetters(4)
+                minBox:SetJustifyH("CENTER")
+                minBox.which = "minutes"
+                minBox:SetScript("OnEnterPressed", function()
+                    CommitLimitBox(this)
+                    this:ClearFocus()
+                end)
+                minBox:SetScript("OnEditFocusLost", function()
+                    CommitLimitBox(this)
+                end)
+                minBox:SetScript("OnEscapePressed", function()
+                    ShowLimitBox(this)
+                    this:ClearFocus()
+                    f:Hide()
+                end)
+                row.minBox = minBox
+
+                local minUnit = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                minUnit:SetPoint("LEFT", minBox, "RIGHT", 6, 0)
+                minUnit:SetText("min")
+
                 f.itemRows[i] = row
                 return row
             end
@@ -2468,6 +2690,8 @@ local function CreateConfigFrame()
                 for i = 1, n do
                     local row = GetItemRow(i)
                     row.itemName = list[i]
+                    row.minBox.spellName = list[i]
+                    ShowLimitBox(row.minBox)
                     getglobal(row.check:GetName() .. "Text"):SetText(list[i])
                     if ShamShieldDB.hiddenItems and ShamShieldDB.hiddenItems[list[i]] then
                         row.check:SetChecked(nil)
@@ -2553,6 +2777,10 @@ local function CreateConfigFrame()
             end
         end
 
+        if tabName == "Limits" then
+            y = BuildLimitsGrid(f, page, y)
+        end
+
         if tabName == "Weapons" then
             y = BuildImbuesPage(f, page, y)
         end
@@ -2618,6 +2846,7 @@ local function CreateConfigFrame()
         end
         if this.refreshItems then this.refreshItems() end
         if this.refreshImbues then this.refreshImbues() end
+        if this.refreshLimits then this.refreshLimits() end
         if this.soundChecks then
             for k = 1, table.getn(this.soundChecks) do
                 if KindEnabled(this.soundChecks[k].kind) then
@@ -2693,34 +2922,6 @@ SlashCmdList["SHAMSHIELD"] = function(msg)
             ShamShieldDB.sound = false
             DEFAULT_CHAT_FRAME:AddMessage("ShamShield: sound alerts OFF.")
         end
-    elseif string.find(msg, "^test") then
-        local _, _, which = string.find(msg, "^test%s*(%a*)")
-        if which == "low" then
-            PlayKind("low", true)
-        elseif which == "depleted" then
-            PlayKind("depleted", true)
-        elseif which == "alert" then
-            PlayKind("alert", true)
-        else
-            DEFAULT_CHAT_FRAME:AddMessage("ShamShield: /ss test low | depleted | alert")
-        end
-    elseif msg == "debug" then
-        -- Prints what the client reports for each of your buffs, so charge
-        -- counting problems can be diagnosed.
-        local out = function(t) DEFAULT_CHAT_FRAME:AddMessage("ShamShield: " .. t) end
-        out("tracking shield = " .. tostring(shieldSlot.state.active and "active" or "not active")
-            .. ", count = " .. tostring(shieldSlot.state.count)
-            .. ", selected = " .. tostring(GetSelected(shieldSlot)))
-        for i = 0, 31 do
-            local idx = GetPlayerBuff(i, "HELPFUL")
-            if not idx or idx < 0 then break end
-            PrepTip()
-            scanTip:SetPlayerBuff(idx)
-            local name = ShamShieldScanTipTextLeft1:GetText()
-            out("buff " .. idx .. ": " .. tostring(name)
-                .. " | applications = " .. tostring(GetPlayerBuffApplications(idx))
-                .. " | time left = " .. tostring(GetPlayerBuffTimeLeft(idx)))
-        end
     elseif msg == "reset" then
         ShamShieldDB.x = nil
         ShamShieldDB.y = nil
@@ -2728,6 +2929,6 @@ SlashCmdList["SHAMSHIELD"] = function(msg)
         root:SetPoint("CENTER", UIParent, "CENTER", 0, -150)
         DEFAULT_CHAT_FRAME:AddMessage("ShamShield: position reset.")
     else
-        DEFAULT_CHAT_FRAME:AddMessage("ShamShield: /ss config | lock | unlock | reset | sound | test | debug")
+        DEFAULT_CHAT_FRAME:AddMessage("ShamShield: /ss config | lock | unlock | reset | sound")
     end
 end
