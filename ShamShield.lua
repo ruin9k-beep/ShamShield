@@ -1734,9 +1734,10 @@ do
         intro:SetText("When a weapon below is in your main hand, its preferred imbue and "
                       .. "shield are selected automatically. Type the weapon's name or pick "
                       .. "one from your inventory, then choose an imbue and / or a shield "
-                      .. "(click a chosen icon again to clear it). Tick or untick each one "
-                      .. "in the list to turn its auto-picking on or off.")
-        y = y + 72
+                      .. "(click a chosen icon again to clear it). The list shows only the "
+                      .. "chosen buffs: tick or untick one to turn its auto-picking on or off, "
+                      .. "or add the weapon again to change a choice.")
+        y = y + 90
 
         -- Weapon name + inventory picker ----------------------------------------
         local box = CreateFrame("EditBox", "ShamShieldConfigWeaponBox", page, "InputBoxTemplate")
@@ -1813,6 +1814,33 @@ do
             return cb
         end
 
+        -- One spell icon (the chosen buff); hidden when nothing is chosen.
+        local function MakeIcon(row, slot, x)
+            local b = CreateFrame("Button", nil, row)
+            b:SetWidth(20)
+            b:SetHeight(20)
+            b:SetPoint("TOPLEFT", row, "TOPLEFT", x, -25)
+            b.icon = b:CreateTexture(nil, "BACKGROUND")
+            b.icon:SetAllPoints(b)
+            b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            b:SetScript("OnEnter", function()
+                GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                local sp = FindKnown(slot, this.spellName)
+                if sp then
+                    GameTooltip:SetSpell(sp.index, BOOKTYPE_SPELL)
+                else
+                    GameTooltip:SetText(this.spellName or "")
+                    GameTooltip:AddLine("Not learned yet", 0.6, 0.6, 0.6)
+                end
+                GameTooltip:Show()
+            end)
+            b:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+            b:Hide()
+            return b
+        end
+
         local function GetRow(i)
             if rows[i] then return rows[i] end
 
@@ -1838,43 +1866,31 @@ do
                 RefreshRows()
             end)
 
-            -- Imbue: checkbox (auto-pick on / off) + four icons
+            -- Imbue: checkbox (auto-pick on / off) + the chosen imbue's icon
             row.imbueCheck = MakeCheck(row, "ShamShieldConfigPrefImbueOn" .. i, 18,
                                        "Auto-pick this imbue for this weapon", function()
                 local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
                 if not pref then return end
                 if this:GetChecked() then pref.imbueOn = true else pref.imbueOn = false end
+                row.imbueIcon.icon:SetVertexColor(this:GetChecked() and 1 or 0.45,
+                                                  this:GetChecked() and 1 or 0.45,
+                                                  this:GetChecked() and 1 or 0.45)
                 ForcePrefCheck()
             end)
-            row.imbuePicker = MakePicker(row, weaponSlot, WEAPON_BUFFS, 20, 2, "TOPLEFT", 44, -25,
-                                         function(name)
-                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
-                if not pref then return end
-                pref.imbue = name
-                pref.imbueOn = true
-                row.imbuePicker.Select(name)
-                row.imbueCheck:SetChecked(1)
-                ForcePrefCheck()
-            end)
+            row.imbueIcon = MakeIcon(row, weaponSlot, 44)
 
-            -- Shield: checkbox (auto-pick on / off) + three icons
-            row.shieldCheck = MakeCheck(row, "ShamShieldConfigPrefShieldOn" .. i, 168,
+            -- Shield: checkbox (auto-pick on / off) + the chosen shield's icon
+            row.shieldCheck = MakeCheck(row, "ShamShieldConfigPrefShieldOn" .. i, 110,
                                         "Auto-pick this shield for this weapon", function()
                 local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
                 if not pref then return end
                 if this:GetChecked() then pref.shieldOn = true else pref.shieldOn = false end
+                row.shieldIcon.icon:SetVertexColor(this:GetChecked() and 1 or 0.45,
+                                                   this:GetChecked() and 1 or 0.45,
+                                                   this:GetChecked() and 1 or 0.45)
                 ForcePrefCheck()
             end)
-            row.shieldPicker = MakePicker(row, shieldSlot, SHIELDS, 20, 2, "TOPLEFT", 194, -25,
-                                          function(name)
-                local pref = ShamShieldDB.weaponPrefs[row.prefIndex]
-                if not pref then return end
-                pref.shield = name
-                pref.shieldOn = true
-                row.shieldPicker.Select(name)
-                row.shieldCheck:SetChecked(1)
-                ForcePrefCheck()
-            end)
+            row.shieldIcon = MakeIcon(row, shieldSlot, 136)
 
             rows[i] = row
             return row
@@ -1890,20 +1906,41 @@ do
                 row.prefIndex = i
                 row.label:SetText(Truncate(pref.weapon, 44))
 
-                row.imbuePicker.Update()
-                row.imbuePicker.Select(pref.imbue)
-                if pref.imbue and pref.imbueOn ~= false then
-                    row.imbueCheck:SetChecked(1)
+                -- Only the chosen buffs are shown; nothing at all when none is chosen.
+                if pref.imbue then
+                    local on = pref.imbueOn ~= false
+                    row.imbueIcon.spellName = pref.imbue
+                    row.imbueIcon.icon:SetTexture(SpellTexture(weaponSlot, pref.imbue))
+                    if on then
+                        row.imbueIcon.icon:SetVertexColor(1, 1, 1)
+                        row.imbueCheck:SetChecked(1)
+                    else
+                        row.imbueIcon.icon:SetVertexColor(0.45, 0.45, 0.45)
+                        row.imbueCheck:SetChecked(nil)
+                    end
+                    row.imbueIcon:Show()
+                    row.imbueCheck:Show()
                 else
-                    row.imbueCheck:SetChecked(nil)
+                    row.imbueIcon:Hide()
+                    row.imbueCheck:Hide()
                 end
 
-                row.shieldPicker.Update()
-                row.shieldPicker.Select(pref.shield)
-                if pref.shield and pref.shieldOn ~= false then
-                    row.shieldCheck:SetChecked(1)
+                if pref.shield then
+                    local on = pref.shieldOn ~= false
+                    row.shieldIcon.spellName = pref.shield
+                    row.shieldIcon.icon:SetTexture(SpellTexture(shieldSlot, pref.shield))
+                    if on then
+                        row.shieldIcon.icon:SetVertexColor(1, 1, 1)
+                        row.shieldCheck:SetChecked(1)
+                    else
+                        row.shieldIcon.icon:SetVertexColor(0.45, 0.45, 0.45)
+                        row.shieldCheck:SetChecked(nil)
+                    end
+                    row.shieldIcon:Show()
+                    row.shieldCheck:Show()
                 else
-                    row.shieldCheck:SetChecked(nil)
+                    row.shieldIcon:Hide()
+                    row.shieldCheck:Hide()
                 end
                 row:Show()
             end
