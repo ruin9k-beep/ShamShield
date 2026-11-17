@@ -162,7 +162,19 @@ root:SetHeight(MAIN_SIZE + TOGGLE_H)
 root:SetMovable(true)
 root:SetClampedToScreen(true)
 root:SetPoint("CENTER", UIParent, "CENTER", 0, -150)
--- No backdrop, no border: the frame itself is fully transparent.
+-- Classic panel art behind the slots (a child so the saved position stays the slots').
+local panel = CreateFrame("Frame", nil, root)
+panel:SetPoint("TOPLEFT", root, "TOPLEFT", -8, 8)
+panel:SetPoint("BOTTOMRIGHT", root, "BOTTOMRIGHT", 8, -8)
+panel:SetFrameLevel(root:GetFrameLevel())
+panel:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 },
+})
+panel:SetBackdropColor(0, 0, 0, 0.85)
+panel:SetBackdropBorderColor(0.8, 0.8, 0.8, 1)
 
 local scanTip = CreateFrame("GameTooltip", "ShamShieldScanTip", nil, "GameTooltipTemplate")
 
@@ -1475,7 +1487,7 @@ local NUMBER_OPTIONS = {
 local NUMBER_ROW_H = 74
 local ITEM_ROW_H = 26
 local SCALE_MIN, SCALE_MAX = 0.5, 2.0
-local PAGE_TOP = 66          -- distance from the top of the window to a page
+local PAGE_TOP = 46          -- distance from the top of the window to a page
 local PAGE_PAD = 18          -- space under the last row of a page
 
 local config
@@ -2257,8 +2269,14 @@ local function CreateConfigFrame()
     f:SetScript("OnDragStart", function() this:StartMoving() end)
     f:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
 
+    -- Classic dialog header plate with the title on it.
+    local header = f:CreateTexture(nil, "ARTWORK")
+    header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+    header:SetWidth(256)
+    header:SetHeight(64)
+    header:SetPoint("TOP", f, "TOP", 0, 12)
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOP", f, "TOP", 0, -18)
+    title:SetPoint("TOP", header, "TOP", 0, -14)
     title:SetText("ShamShield Options")
 
     local close = CreateFrame("Button", "ShamShieldConfigClose", f, "UIPanelCloseButton")
@@ -2797,12 +2815,11 @@ local function CreateConfigFrame()
         for i = 1, table.getn(CONFIG_TABS) do
             if i == index then
                 f.pages[i]:Show()
-                f.tabButtons[i]:Disable()    -- the active tab looks pressed / greyed
             else
                 f.pages[i]:Hide()
-                f.tabButtons[i]:Enable()
             end
         end
+        PanelTemplates_SetTab(f, index)
         if f.soundPicker then f.soundPicker:Hide() end
         if f.weaponPicker then f.weaponPicker:Hide() end
         f:SetHeight(PAGE_TOP + f.pages[index].height + PAGE_PAD)
@@ -2811,11 +2828,16 @@ local function CreateConfigFrame()
     for i = 1, table.getn(CONFIG_TABS) do
         f.pages[i] = BuildPage(CONFIG_TABS[i])
 
-        local tab = CreateFrame("Button", "ShamShieldConfigTab" .. i, f, "UIPanelButtonTemplate")
-        tab:SetWidth(60)
-        tab:SetHeight(22)
-        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 18 + (i - 1) * 62, -40)
+        -- Classic folder tabs hanging off the bottom edge. The name must be
+        -- <frame name>Tab<i> for the PanelTemplates helpers.
+        local tab = CreateFrame("Button", "ShamShieldConfigTab" .. i, f, "CharacterFrameTabButtonTemplate")
+        if i == 1 then
+            tab:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 14, 7)
+        else
+            tab:SetPoint("LEFT", f.tabButtons[i - 1], "RIGHT", -14, 0)
+        end
         tab:SetText(CONFIG_TABS[i])
+        PanelTemplates_TabResize(0, tab)
         tab.index = i
         tab:SetScript("OnClick", function()
             PlaySound("igMainMenuOptionCheckBoxOn")
@@ -2823,6 +2845,7 @@ local function CreateConfigFrame()
         end)
         f.tabButtons[i] = tab
     end
+    PanelTemplates_SetNumTabs(f, table.getn(CONFIG_TABS))
 
     -- Refresh every control from the saved settings each time the window opens.
     f:SetScript("OnShow", function()
